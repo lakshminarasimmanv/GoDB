@@ -52,7 +52,3 @@ func main() {
 	fmt.Printf("%v\n", records)
 
 }
-
-func New() {
-
-}
