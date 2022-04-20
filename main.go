@@ -52,10 +52,7 @@ func main() {
 	fmt.Printf("%v\n", records)
 
 }
-<<<<<<< HEAD
-=======
 
 func New() {
 	// Hello
 }
->>>>>>> a92d978614a31c29208c9dfbde514b6b9788a6e6
