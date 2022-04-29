@@ -80,11 +80,11 @@ func New(dir string) (*Driver, error) {
 
 func (d *Driver) Write(collection, resource string, v interface{}) error {
 	if collection == "" {
-		return fmt.Errorf("Missing collection - no place to save record!")
+		return fmt.Errorf("Missing collection - no place to save record!\n")
 	}
 
 	if resource == "" {
-		return fmt.Errorf("Missing resource - unable to save record (no name)!")
+		return fmt.Errorf("Missing resource - unable to save record (no name)!\n")
 	}
 
 	mutex := d.getOrCreateMutex(collection)
@@ -199,5 +199,5 @@ func (d *Driver) getOrCreateMutex(collection string) *sync.Mutex {
 		m = &sync.Mutex{}
 		d.mutexes[collection] = m
 	}
-	return nil
+	return m
 }
