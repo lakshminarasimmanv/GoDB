@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -41,11 +43,6 @@ func main() {
 		fmt.Printf("Error! %v\n", err)
 	}
 
-	employees := []User{
-		{"Lakshmi Narasimman", "22", "9453754225", Address{"Theni", "453", "AVR Compound", "India", "625531", "Tamil Nadu"}},
-		{"Kishore", "30", "9876543234", Address{"Mumbai", "742", "Main Road", "India", "625637", "Maharastra"}},
-	}
-
 	for _, value := range employees {
 		db.Write("users", value.Name, User{
 			Name:    value.Name,
@@ -61,6 +58,53 @@ func main() {
 	}
 	fmt.Printf("%v\n", records)
 
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Welcome to the home page!")
+	})
+
+	http.HandleFunc("/users", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "GET":
+			records, err := db.ReadAll("users")
+			if err != nil {
+				fmt.Printf("Error! %v", err)
+			}
+			fmt.Fprintf(w, "%v\n", records)
+		case "POST":
+			var user User
+			err := json.NewDecoder(r.Body).Decode(&user)
+			if err != nil {
+				fmt.Printf("Error! %v", err)
+			}
+			db.Write("users", user.Name, User{
+				Name:    user.Name,
+				Age:     user.Age,
+				Contact: user.Contact,
+				Address: user.Address,
+			})
+			fmt.Fprintf(w, "User %v added successfully!", user.Name)
+		case "DELETE":
+			var user User
+			err := json.NewDecoder(r.Body).Decode(&user)
+			if err != nil {
+				fmt.Printf("Error! %v", err)
+			}
+			db.Delete("users", user.Name)
+			fmt.Fprintf(w, "User %v deleted successfully!", user.Name)
+		}
+	})
+
+	http.HandleFunc("/users/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "GET":
+			var user User
+			db.Read("users", r.URL.Path[len("/users/"):], &user)
+			fmt.Fprintf(w, "%v\n", user)
+		}
+	})
+
+	fmt.Println("Listening on 8080...")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
 func New(dir string) (*Driver, error) {
@@ -71,133 +115,106 @@ func New(dir string) (*Driver, error) {
 		mutexes: make(map[string]*sync.Mutex),
 	}
 
-	if _, err := os.Stat(dir); err != nil {
-		fmt.Println("Database Already Exist: ", dir)
-	}
-
-	return &driver, os.MkdirAll(dir, 0755)
+	return &driver, nil
 }
 
-func (d *Driver) Write(collection, resource string, v interface{}) error {
-	if collection == "" {
-		return fmt.Errorf("Missing collection - no place to save record!\n")
+func (driver *Driver) Write(table string, key string, value interface{}) error {
+	driver.mutex.Lock()
+	defer driver.mutex.Unlock()
+
+	if _, ok := driver.mutexes[table]; !ok {
+		driver.mutexes[table] = &sync.Mutex{}
 	}
 
-	if resource == "" {
-		return fmt.Errorf("Missing resource - unable to save record (no name)!\n")
-	}
+	driver.mutexes[table].Lock()
+	defer driver.mutexes[table].Unlock()
 
-	mutex := d.getOrCreateMutex(collection)
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	dir := filepath.Join(d.dir, collection)
-	fnlPath := filepath.Join(dir, resource+".json")
-	tmpPath := fnlPath + ".tmp"
-
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	tableDir := filepath.Join(driver.dir, table)
+	if err := os.MkdirAll(tableDir, 0755); err != nil {
 		return err
 	}
 
-	b, err := json.MarshalIndent(v, "", "\t")
+	file := filepath.Join(tableDir, key)
+	f, err := os.Create(file)
 	if err != nil {
 		return err
 	}
+	defer f.Close()
 
-	b = append(b, byte('\n'))
-
-	if err := ioutil.WriteFile(tmpPath, b, 0644); err != nil {
-		return err
-	}
-
-	return os.Rename(tmpPath, fnlPath)
+	encoder := json.NewEncoder(f)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
 }
 
-func (d *Driver) Read(collection, resource string, v interface{}) error {
-	if collection == "" {
-		return fmt.Errorf("Missing collection - unable to read!")
-	}
-	if resource == "" {
-		return fmt.Errorf("Missing resource - no place to save record!")
-	}
+func (driver *Driver) Read(table string, key string, value interface{}) error {
+	driver.mutex.Lock()
+	defer driver.mutex.Unlock()
 
-	record := filepath.Join(d.dir, collection, resource)
-
-	if _, err := stat(record); err != nil {
-		return err
+	if _, ok := driver.mutexes[table]; !ok {
+		driver.mutexes[table] = &sync.Mutex{}
 	}
 
-	b, err := ioutil.ReadFile(record + ".json")
+	driver.mutexes[table].Lock()
+	defer driver.mutexes[table].Unlock()
+
+	file := filepath.Join(driver.dir, table, key)
+	f, err := os.Open(file)
 	if err != nil {
 		return err
 	}
+	defer f.Close()
 
-	return json.Unmarshal(b, &v)
+	decoder := json.NewDecoder(f)
+	return decoder.Decode(value)
 }
 
-func (d *Driver) ReadAll(collection string) ([]string, error) {
-	if collection == "" {
-		return nil, fmt.Errorf("Missing collection - unnable to read!")
+func (driver *Driver) ReadAll(table string) ([]interface{}, error) {
+	driver.mutex.Lock()
+	defer driver.mutex.Unlock()
+
+	if _, ok := driver.mutexes[table]; !ok {
+		driver.mutexes[table] = &sync.Mutex{}
 	}
 
-	dir := filepath.Join(d.dir, collection)
+	driver.mutexes[table].Lock()
+	defer driver.mutexes[table].Unlock()
 
-	if _, err := stat(dir); err != nil {
+	tableDir := filepath.Join(driver.dir, table)
+	files, err := ioutil.ReadDir(tableDir)
+	if err != nil {
 		return nil, err
 	}
 
-	files, _ := ioutil.ReadDir(dir)
-	var records []string
-
+	var records []interface{}
 	for _, file := range files {
-		b, err := ioutil.ReadFile(filepath.Join(dir, file.Name()))
-		if err != nil {
+		var record interface{}
+		if err := driver.Read(table, file.Name(), &record); err != nil {
 			return nil, err
 		}
-
-		records = append(records, string(b))
+		records = append(records, record)
 	}
 
 	return records, nil
-
 }
 
-func (d *Driver) Delete(collection, resource string) error {
-	path := filepath.Join(collection, resource)
+func (driver *Driver) Delete(table string, key string) error {
+	driver.mutex.Lock()
+	defer driver.mutex.Unlock()
 
-	mutex := d.getOrCreateMutex(collection)
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	dir := filepath.Join(d.dir, path)
-
-	switch fi, err := stat(dir); {
-	case fi == nil, err != nil:
-		return fmt.Errorf("Unable to file or directory %v\n", path)
-	case fi.Mode().IsDir():
-		return os.RemoveAll(dir)
-
-	case fi.Mode().IsRegular():
-		return os.RemoveAll(dir + ".json")
+	if _, ok := driver.mutexes[table]; !ok {
+		driver.mutexes[table] = &sync.Mutex{}
 	}
-	return nil
+
+	driver.mutexes[table].Lock()
+	defer driver.mutexes[table].Unlock()
+
+	file := filepath.Join(driver.dir, table, key)
+	return os.Remove(file)
 }
 
-func stat(path string) (fi os.FileInfo, err error) {
-	if fi, err = os.Stat(path); os.IsNotExist(err) {
-		fi, err = os.Stat(path + ".json")
-	}
-	return
-}
-
-func (d *Driver) getOrCreateMutex(collection string) *sync.Mutex {
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
-	m, ok := d.mutexes[collection]
-
-	if !ok {
-		m = &sync.Mutex{}
-		d.mutexes[collection] = m
-	}
-	return m
-}
+var employees = []struct {
+	Name    string
+	Age     json.Number
+	Contact string
+	Address Address
+}{}
